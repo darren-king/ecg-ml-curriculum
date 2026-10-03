@@ -17,6 +17,8 @@ from ecg_course.export import read_json_asset, shared_amplitude_range
 def test_asset_keeps_order_units_and_exact_values(synthetic_record_path):
     record = load_record(synthetic_record_path)
     asset = record_to_asset(record, {"dataset": "synthetic"})
+    assert asset["schema_version"] == 2
+    assert asset["amplitude_range"] == [-1.0, 1.0]
     assert asset["lead_order"] == ["I", "II", "V1"]
     assert [lead["name"] for lead in asset["leads"]] == ["I", "II", "V1"]
     assert asset["fs_hz"] == 250.0
@@ -60,9 +62,11 @@ def test_comparison_reports_shape_and_metadata_drift(synthetic_record_path, tmp_
     record = load_record(synthetic_record_path)
     asset = read_json_asset(write_json_asset(record, tmp_path / "a.json"))
     asset["fs_hz"] = 500
+    asset["amplitude_range"] = [-2.0, 2.0]
     asset["leads"][0]["values"].pop()
     result = compare_asset_with_record(asset, record)
     assert any("fs_hz" in p for p in result.problems)
+    assert any("amplitude_range" in p for p in result.problems)
     assert any("999 values" in p for p in result.problems)
 
 
@@ -73,10 +77,23 @@ def test_export_refuses_non_finite_values(synthetic_record_path):
         record_to_asset(record)
 
 
-def test_shared_amplitude_range_covers_every_lead(synthetic_record_path):
-    record = load_record(synthetic_record_path)
+def test_shared_amplitude_range_is_symmetric_and_tidy(synthetic_record_path):
+    record = load_record(synthetic_record_path)  # peak |value| is 0.8 mV
     low, high = shared_amplitude_range(record)
-    assert low < record.signal.min() and high > record.signal.max()
+    assert (low, high) == (-1.0, 1.0)
+    assert high > np.abs(record.signal).max()
+    assert (high / 0.5).is_integer()
+
+
+@pytest.mark.parametrize(
+    ("peak", "limit"),
+    [(1.444, 1.5), (1.5, 2.0), (-0.49, 0.5), (0.0, 0.5), (2.0, 2.5)],
+)
+def test_shared_amplitude_range_rule(synthetic_record_path, peak, limit):
+    record = load_record(synthetic_record_path)
+    record.signal[:] = 0.0
+    record.signal[0, 0] = peak
+    assert shared_amplitude_range(record) == (-limit, limit)
 
 
 def test_figures_are_written_and_svg_is_deterministic(synthetic_record_path, tmp_path):

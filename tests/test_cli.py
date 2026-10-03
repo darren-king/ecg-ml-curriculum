@@ -139,3 +139,25 @@ def test_cli_reports_missing_data_dir_without_traceback(tmp_path, capsys):
     code = main(["--data-dir", str(tmp_path / "nowhere"), "verify"])
     assert code == 1
     assert "ecg-course verify" in capsys.readouterr().err
+
+
+def test_check_passes_on_good_download_and_fails_on_drift(tmp_path, capsys):
+    from ecg_course.cli import main
+    from ecg_course.fetch import fetch_example
+    from tests.conftest import write_synthetic_record
+
+    data_dir = tmp_path / "data"
+    rec_dir = data_dir / "rec"
+    rec_dir.mkdir(parents=True)
+    record = write_synthetic_record(rec_dir)
+    spec = _synthetic_spec(data_dir, record)
+    fetch_example(data_dir, spec, downloader=lambda u, d: None)
+    assert main(["--data-dir", str(data_dir), "check"], spec) == 0
+    out = capsys.readouterr().out
+    assert "CHECK OK" in out and "shape (1000, 3)" in out
+    with open(f"{record}.dat", "r+b") as handle:
+        handle.seek(10)
+        handle.write(b"\x01")
+    assert main(["--data-dir", str(data_dir), "check"], spec) == 1
+    assert "CHECK FAILED" in capsys.readouterr().out
+    assert main(["--data-dir", str(tmp_path / "nowhere"), "check"], spec) == 1

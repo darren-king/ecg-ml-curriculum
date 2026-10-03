@@ -1,4 +1,4 @@
-"""Command-line entry point: ``ecg-course fetch | export | verify | all``.
+"""Command-line entry point: ``ecg-course fetch | check | export | verify | all``.
 
 Default paths are relative to the current working directory and the
 documented commands are run from the repository root.
@@ -159,13 +159,16 @@ def cmd_export(args: argparse.Namespace, spec: ExampleSpec = EXAMPLE) -> int:
             "wfdb.rdrecord(record, physical=True) applies each lead's gain and "
             "baseline from the header to give values in the header's units.",
             "JSON: one array per lead, header order, Python repr floats, no "
-            "rounding, filtering, resampling or reordering.",
+            "rounding, filtering, resampling or reordering, plus amplitude_range, "
+            "the shared symmetric plotting range.",
             "Header and licence: the downloaded .hea and LICENSE.txt files copied "
             "unchanged so the site carries them with the derived data.",
             f"SVG: lead {spec.figure_lead} against time in seconds via Matplotlib "
             "(Figure API, Agg/SVG backends, fixed svg.hashsalt, no date metadata).",
             "PNG: all leads stacked in header order with one shared amplitude "
-            "range chosen as min/max over every lead plus 5 % padding.",
+            "range, symmetric about zero: the smallest multiple of 0.5 mV at or "
+            "above 1.02 x the largest absolute value over all leads (-1.5 to "
+            "+1.5 mV for this record).",
         ],
         "derived_assets": derived,
     }
@@ -177,6 +180,31 @@ def cmd_export(args: argparse.Namespace, spec: ExampleSpec = EXAMPLE) -> int:
         digest = item["sha256"][:12]
         print(f"wrote {item['path']}  {item['bytes']} bytes  sha256 {digest}…")
     print(f"wrote {paths['manifest'].relative_to(site_dir)}")
+    return 0
+
+
+def cmd_check(args: argparse.Namespace, spec: ExampleSpec = EXAMPLE) -> int:
+    """Learner-side check: source files match upstream and the record loads."""
+    data_dir = Path(args.data_dir)
+    failures = check_source_files(data_dir, spec)
+    print(
+        "source files match upstream sha256"
+        if not failures
+        else "source files differ from upstream"
+    )
+    if not failures:
+        record = load_record(record_path(data_dir, spec))
+        print(
+            f"loaded {record.record_name}: shape {record.signal.shape}, "
+            f"fs {record.fs:g} Hz, leads {list(record.lead_names)}, "
+            f"units {sorted(set(record.units))}"
+        )
+        failures = check_header(record, spec)
+        print("header matches verified values" if not failures else "header mismatch")
+    if failures:
+        print("CHECK FAILED:", *failures, sep="\n  ")
+        return 1
+    print("CHECK OK")
     return 0
 
 
@@ -250,6 +278,10 @@ def build_parser() -> argparse.ArgumentParser:
     fetch = sub.add_parser("fetch", help="download the record, licence and manifest")
     fetch.add_argument("--force", action="store_true", help="re-download cached files")
     fetch.set_defaults(func=cmd_fetch)
+    check = sub.add_parser(
+        "check", help="confirm the downloaded files match upstream and load cleanly"
+    )
+    check.set_defaults(func=cmd_check)
     export = sub.add_parser("export", help="write the JSON asset and figures")
     export.set_defaults(func=cmd_export)
     verify = sub.add_parser("verify", help="compare exported asset with the record")

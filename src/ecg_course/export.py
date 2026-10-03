@@ -9,6 +9,7 @@ Matplotlib's object-oriented API, which never opens a window.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,23 +21,34 @@ from matplotlib.figure import Figure
 from ecg_course.loading import EcgRecord
 from ecg_course.timing import last_sample_time_s, nominal_duration_s, time_axis
 
-ASSET_SCHEMA_VERSION = 1
+ASSET_SCHEMA_VERSION = 2
 SVG_HASHSALT = "ecg-course"
+AMPLITUDE_STEP = 0.5  # the axis limit is a multiple of this many physical units
+AMPLITUDE_HEADROOM = 0.02  # fraction above the largest |value| that must still fit
+AMPLITUDE_RANGE_RULE = (
+    "symmetric about zero; the limit is the smallest multiple of 0.5 at or above "
+    "1.02 x the largest absolute value over all leads"
+)
 
 
 def shared_amplitude_range(
-    record: EcgRecord, pad_fraction: float = 0.05
+    record: EcgRecord,
+    *,
+    step: float = AMPLITUDE_STEP,
+    headroom: float = AMPLITUDE_HEADROOM,
 ) -> tuple[float, float]:
-    """One y-axis range covering every lead, padded so no trace touches an edge."""
+    """One symmetric y-axis range ``(-L, L)`` shared by every lead.
+
+    ``L`` is the smallest positive multiple of ``step`` that is at least
+    ``(1 + headroom)`` times the largest absolute value in the record, so every
+    sample sits strictly inside the range and the limit is a tidy number.
+    For the course record (largest |value| 1.444 mV) this gives -1.5 to +1.5 mV.
+    """
     if not np.isfinite(record.signal).all():
         raise ValueError("amplitude range is undefined for non-finite values")
-    low = float(np.min(record.signal))
-    high = float(np.max(record.signal))
-    span = high - low
-    if span == 0:
-        span = 1.0
-    pad = span * pad_fraction
-    return (low - pad, high + pad)
+    peak = float(np.max(np.abs(record.signal)))
+    limit = max(step, step * math.ceil(peak * (1 + headroom) / step))
+    return (-limit, limit)
 
 
 def record_to_asset(
@@ -69,6 +81,8 @@ def record_to_asset(
         "python_array_shape": [record.n_samples, record.n_leads],
         "python_array_layout": "axis 0 = samples (time), axis 1 = leads",
         "lead_order": list(record.lead_names),
+        "amplitude_range": list(shared_amplitude_range(record)),
+        "amplitude_range_rule": AMPLITUDE_RANGE_RULE,
         "leads": leads,
         "provenance": provenance or {},
     }
@@ -131,6 +145,11 @@ def compare_asset_with_record(
             f"nominal_duration_s {asset.get('nominal_duration_s')} != "
             f"{expected_duration}"
         )
+    expected_range = list(shared_amplitude_range(record))
+    if asset.get("amplitude_range") != expected_range:
+        problems.append(
+            f"amplitude_range {asset.get('amplitude_range')} != {expected_range}"
+        )
     leads = asset.get("leads", [])
     if len(leads) != record.n_leads:
         problems.append(f"{len(leads)} leads in asset, {record.n_leads} in record")
@@ -187,7 +206,7 @@ def save_lead_figure(
     ax = fig.subplots()
     ax.plot(time_axis(record.n_samples, record.fs), record.signal[:, column], lw=0.8)
     ax.set_xlim(0, nominal_duration_s(record.n_samples, record.fs))
-    ax.set_ylim(*y_range)
+    _apply_amplitude_axis(ax, y_range)
     ax.set_xlabel("Time (s)")
     ax.set_ylabel(f"Amplitude ({record.units[column]})")
     ax.set_title(_title(record, f"lead {lead_name} at {record.fs:g} Hz"), fontsize=10)
@@ -207,7 +226,7 @@ def save_all_leads_figure(record: EcgRecord, path: str | Path) -> Path:
     axes = fig.subplots(record.n_leads, 1, sharex=True, sharey=True)
     for column, (ax, name) in enumerate(zip(axes, record.lead_names, strict=True)):
         ax.plot(t, record.signal[:, column], lw=0.6)
-        ax.set_ylim(*y_range)
+        _apply_amplitude_axis(ax, y_range)
         ax.set_ylabel(
             f"{name}\n({record.units[column]})",
             rotation=0,
@@ -227,6 +246,15 @@ def save_all_leads_figure(record: EcgRecord, path: str | Path) -> Path:
     fig.tight_layout()
     _save(fig, target)
     return target
+
+
+def _apply_amplitude_axis(ax, y_range: tuple[float, float]) -> None:
+    """Symmetric limits, ticks every ``AMPLITUDE_STEP`` and a faint zero line."""
+    ax.set_ylim(*y_range)
+    ax.set_yticks(
+        np.arange(y_range[0], y_range[1] + AMPLITUDE_STEP / 2, AMPLITUDE_STEP)
+    )
+    ax.axhline(0, lw=0.5, color="0.6", zorder=0)
 
 
 def _save(fig: Figure, target: Path) -> None:

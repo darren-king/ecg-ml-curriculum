@@ -1,8 +1,9 @@
 """Your first ECG in Python: the runnable version of the lesson.
 
-Run from the repository root after `ecg-course fetch`:
+Run from the course folder (the cloned ecg-ml-curriculum repository) after
+`uv run ecg-course fetch`:
 
-    uv run --project python python/examples/first_ecg.py
+    uv run python examples/first_ecg.py
 
 The lesson page shows these sections verbatim. Markers of the form
 `# --8<-- [start:name]` / `# --8<-- [end:name]` delimit each snippet.
